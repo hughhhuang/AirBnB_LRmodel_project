@@ -1,0 +1,452 @@
+---
+title: "Analysis of AirBnB Listing Prices in Vancouver, BC, CA"
+date: ''
+output:
+  html_document: 
+    theme: readable
+    toc: yes
+urlcolor: cyan
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction 
+       
+The dataset being analyzed in this report is that of Vancouver AirBnB listings, which was compiled on April 12, 2021. The dataset comes from `Inside AirBnB`, which is an independent, non-commercial resource that contains publicly available information of many cities' AirBnB listings; the Vancouver data that we analyzed can be found here: http://data.insideairbnb.com/canada/bc/vancouver/2021-04-12/data/listings.csv.gz.    
+     
+The aim of this analysis is to create a linear model to predict the prices of listings in Vancouver, CA. This dataset contains 4299 rows and 74 variables, but for our analysis, we narrowed down the selection of variables that we would consider for our model to be the following 17 variables:
+
+```{r echo=FALSE}
+library(kableExtra)
+keep_variables = data.frame(Variables = c("host_is_superhost", "neighbourhood_cleansed", "accommodates", "beds", "availability_365", "review_scores_cleanliness", "property_type", "bathrooms_cleansed", "price", "number_of_reviews", "instant_bookable", "host_listings_count", "room_type", "bedrooms", "has_availability", "review_scores_rating", "reviews_per_month"), Class = c("logical", "factor", "numeric", "numeric", "numeric", "numeric", "factor", "numeric", "numeric", "numeric", "logical", "numeric", "factor", "numeric", "logical", "numeric", "numeric"), Description =  c("Whether host meets requirements: at least 4.8 overall rating, completed 10 trips, at least 90% response rate, at most 1% cancellation rate", "Neighborhood of listing", "No. of people listing accommodates", "No. of beds", "Availability of listing year round", "Cleanliness score based on reviews", "Type of Property", "No. of Bathrooms", "Price of Listing", "Total reviews received", "Whether instant bookable", "No. of listings host owns", "Type of Room", "No. of Bedrooms", "Available or Not", "Rating based on reviews", "No. of reviews received per month"))
+
+knitr::kable(keep_variables, caption = "Important Variables For Predicting Price") %>% kable_paper("striped", full_width = F) %>% column_spec(1, width = "20em") %>% column_spec(2, width = "20em")%>% column_spec(3, width = "25em")
+```
+       
+                  
+This analysis would be useful for helping consumers who are planning a trip to Vancouver, by allowing them to estimate how much they would have to pay for AirBnB housing, based on the characteristics of the listing that they are looking for. It would also help Vancouver AirBnB hosts to price their listings competitively by allowing them to estimate how much their listing should cost based on the variables that we will analyze in our model. We are focusing on Vancouver specifically because one of our team members, Son-Tung, is planning to move to Vancouver soon and is interested in the housing prices there. 
+
+# Methods 
+
+## Data Loading & Cleaning
+
+### Narrowing Selection of Variables from 74 to 17
+The original dataset has 4299 rows and 74 variables; however, in order to allow the usage of exhaustive search and to limit the number of interaction terms we would have to consider for our model, we decided to remove those variables from the dataset that we thought would have less to no impact on the price of the listing and variables that had parsing issues. For instance, some variables were formatted as long, difficult-to-parse strings or were large URL links, such as `host_about`, `amenities`, `listing_url`, `host_url`, etc, we excluded such variables from our consideration.
+
+```{r, message = FALSE}
+library(readr)
+library(stringr)
+listings_raw = read_csv("listings.csv")
+
+#example excluded variables
+host_about_1 = stringr::str_trunc(listings_raw$host_about, 100)[2]
+amenities_1 = stringr::str_trunc(listings_raw$amenities, 100)[1]
+listing_url_1 = stringr::str_trunc(listings_raw$listing_url, 100)[1]
+host_url_1 = stringr::str_trunc(listings_raw$host_url, 100)[1]
+```
+
+
+Examples of excluded variables
+
+* host_about: "`r (host_about_1)`"
+    
+* amenities: "`r (amenities_1)`"
+    
+* listing_url: "`r (listing_url_1)`"
+    
+* host_url: "`r (host_url_1)`"      
+         
+We cleaned the original dataset by removing the above mentioned variables and converted the price from a string value to a numeric value. We created a new file for the cleaned dataset and named it `vancouver_listings_cleansed.csv`.
+
+```{r, message = FALSE}
+# Load dataset
+library(readr)
+listings = read_csv("vancouver_listings_cleansed.csv") #cleaned dataset
+```
+
+We then looked at scatterplots of price vs. each predictor to further narrow down which variables to consider for the model. We chose 17 variables that had decent correlation with price. Below are examples of the plots for some of the predictors we chose. For a full table of the 17 variables and their descriptions, please refer to the introduction.
+
+```{r fig.height=5, fig.width=10}
+#example plots for selected variables
+
+par(mfrow=c(1,3))
+plot(price ~ accommodates, data = listings)
+plot(price ~ bathrooms_cleansed, data = listings)
+plot(price ~ has_availability, data = listings)
+```
+
+### Data Preparation for Model Building
+
+This section includes converting some of the character type predictors to factor variables, removing some of the columns, removing observations that are `NA` and removing factor levels that are too rare which causes issue in train-test dataset splitting.
+
+```{r}
+# Convert some columns to factors
+listings$host_neighbourhood = as.factor(listings$host_neighbourhood)
+listings$neighbourhood_cleansed = as.factor(listings$neighbourhood_cleansed)
+listings$property_type = as.factor(listings$property_type)
+listings$room_type = as.factor(listings$room_type)
+
+# Remove id and string columns
+listings$id = NULL
+listings$description = NULL
+listings$host_acceptance_rate = NULL
+listings$host_verifications = NULL
+listings$amenities = NULL
+listings$host_id = NULL
+listings = na.omit(listings)
+
+# Remove factor levels that are too rare which causes issue in train-test dataset splitting
+listings = subset(listings, listings$host_neighbourhood != "Kihei/Wailea")
+listings = subset(listings, listings$host_neighbourhood != "Ewa")
+listings = subset(listings, listings$property_type != "Camper/RV")
+listings = subset(listings, listings$property_type != "Entire floor")
+listings = subset(listings, listings$property_type != "Private room in boat")
+listings = subset(listings, listings$property_type != "Shared room in hostel")
+listings = subset(listings, listings$property_type != "Private room in bed and breakfast")
+listings = subset(listings, listings$property_type != "Room in bed and breakfast")
+listings = subset(listings, listings$host_neighbourhood != "Metrotown")
+```
+
+Neighborhood is a very important predictor. However, it has too many levels (22) which complicates the models dramatically. Hence, it was decided to group neighborhoods that have similar median prices into 4 groups `g1`, `g2`, `g3` and `g4` and add them in a new column called `neighbourhood_group`:
+
+```{r}
+# Sort neighborhood_cleansed levels by median of price
+oind = order(as.numeric(by(listings$price, listings$neighbourhood_cleansed, median)))
+listings$neighbourhood_cleansed = ordered(listings$neighbourhood_cleansed, levels=levels(listings$neighbourhood_cleansed)[oind])  
+
+# Make new neighborhood_group column to groups neighborhood based on median price
+listings$neighbourhood_group = listings$neighbourhood_cleansed
+levels(listings$neighbourhood_group) = list(
+  "g4" = levels(listings$neighbourhood_cleansed)[1:6],
+  "g3" = levels(listings$neighbourhood_cleansed)[7:12],
+  "g2" = levels(listings$neighbourhood_cleansed)[13:18],
+  "g1" = levels(listings$neighbourhood_cleansed)[19:23]
+)
+```
+
+Variables retained in the Cleaned Dataset:
+
+```{r}
+colnames(listings)
+```
+
+No. of Observations in the Cleaned Dataset:
+
+```{r}
+nrow(listings)
+```
+
+No. of Variables in the Cleaned Dataset:
+
+```{r}
+ncol(listings)
+```
+
+
+## Test:Train Split
+
+$80$% of the cleaned dataset will be used for training the models, and the remaining $20$% will be used for testing the trained models.
+
+```{r}
+set.seed(420)
+listings_trn_idx  = sample(nrow(listings), size = trunc(0.80 * nrow(listings)))
+listings_trn_data = listings[listings_trn_idx, ]
+listings_tst_data = listings[-listings_trn_idx, ]
+```
+
+## Model Evaluator Functions
+
+This section includes some functions that will be beneficial in determining the usefulness of the trained model. We wanted to create a model that can predict prices well, so we evaluated our models with test RMSE, adjusted $R ^ 2$, and complexity metrics. We did not include verification of the model assumptions as part of our evaluation.     
+        
+To calculate Train or Test RMSE of the model    
+    
+```{r}
+rmse = function(actual, predicted) {
+  sqrt(mean((actual - predicted) ^ 2))
+}
+
+get_rmse = function(model, data) {
+  rmse(actual = data$price, 
+       predicted = predict(model, data))
+}
+```
+
+To determine the complexity i.e. number of predictors in the model   
+
+```{r}
+get_complexity = function(model) {
+  length(coef(model)) - 1
+}
+```
+     
+To evaluate the model based on Test RMSE, Adjusted $R ^ 2$ and Model Complexity
+
+```{r}
+evaluate = function(model, test_dataset = listings_tst_data) {
+  test.rmse = get_rmse(model, data = test_dataset)
+  adj.r.squared = summary(model)$adj.r.squared
+  list("Test RMSE" = test.rmse,
+       "Adjusted R-squared" = adj.r.squared,
+       "Model Complexity" = get_complexity(model)
+      )
+}
+```
+
+## Model Building
+
+This section shows the steps that were taken to evaluate the usefulness of different models in determining the prices of the listings.    
+
+### Full Additive Model   
+The first step we took was to look at the full additive model and evaluate it:
+
+```{r message=FALSE}
+full_additive = lm(price ~ ., data = listings_trn_data)
+
+# Evaluate the model
+evaluate(full_additive)
+```
+However, our model is rank-deficient and very complex, with `No of predictors` equal to $`r evaluate(full_additive)[[3]]`$.
+
+### Reconsidering some of the predictors   
+On further investigation it can be identified that `property_type` (`r length(levels(listings$property_type))` levels) greatly increases the complexity of the model and is already cleanly grouped in `room_type` (`r length(levels(listings$room_type))` levels):
+
+```{r}
+# Levels of property type
+levels(listings$property_type)
+
+# Levels of room_type
+levels(listings$room_type)
+
+```
+
+So, the next step will be to fit a model without `property_type` and `neighbourhood_cleansed` variables, but still capturing that information with the grouped variables `room_type` and `neighbourhood_group`. We also fit the model without `host_neighbourhood` because an anova F-test concluded that it was not a significant predictor ([details are in Appendix](#app5)). With this `additive2` model, test rmse and adjusted r-squared get a bit worse, but the model is simplified dramatically, which allows us to try interaction later.
+
+```{r}
+additive2 = lm(price ~ . - property_type - host_neighbourhood - neighbourhood_cleansed, data = listings_trn_data)
+
+# Evaluate the model
+evaluate(additive2)
+
+# Variance Inflation Factor
+library(faraway)
+vif(additive2)
+```
+
+The above model is no longer rank-deficient. Also, the `Variance Inflation Factor` for the predictors are not huge and the maximum `VIF` value that a predictor has is $`r max(vif(additive2))`$, it suggests that there is no collinearity issue.    
+     
+### Backward BIC Search for the model     
+In order to further assess the quality and usefulness of this model, next step will be to use the Backward BIC search for the model above
+
+```{r}
+# Backward BIC model Search from additive2 model
+n = length(resid(additive2))
+back_bic_additive2 = step(additive2, k = log(n), trace = 0)
+
+# Evaluate the model
+evaluate(back_bic_additive2)
+```
+
+The `back_bic_additive2` is a smaller model but has a bit of worse performance than the full additive model.   
+
+### Model with Interactions
+In next step, we experiment with the interactions among the predictors selected in `back_bic_additive2` model:
+
+```{r}
+interaction_model = lm(price ~ (accommodates + bathrooms_cleansed + bedrooms + availability_365 + review_scores_rating + neighbourhood_group) ^ 2, data = listings_trn_data)
+
+# Evaluate the model
+evaluate(interaction_model)
+```
+
+The model found using BIC has a better Adjusted $R ^ 2$ of `0.53` but worst `Test RMSE` among all the models.
+
+### Model with Transformations
+In this step, after experimenting with several higher order, square root and inverse transformations on the predictors, the following model seems to have a best `Test RMSE` out of all the other transformations and above mentioned models. 
+
+```{r}
+transformed_model = lm(price ~ host_is_superhost + accommodates + bathrooms_cleansed + I(1 / bedrooms) + I(beds ^ 4) + availability_365 + I(review_scores_rating ^ 6) + I(review_scores_cleanliness ^ 6) + reviews_per_month + neighbourhood_group, data = listings_trn_data)
+
+# Evaluate the model
+evaluate(transformed_model) 
+```
+
+Apart from the higher order, square root and inverse transformations, Box Cox Transformation was performed on `additive2` to find the best transformation. As per the results the confidence interval was small and was very close to the maximum i.e. $\lambda = 0$. For $\lambda = 0$, we tried log transformation of the response i.e. `price` in this case, however worst `Test RMSE` of approximately `$200.2202` and a best Adjusted $R ^ 2$ of `0.6046184` was returned  ([details are in Appendix](#app3)).
+
+### Exhaustive Search for the model
+
+We also used exhaustive search on the predictors in the `additive_2` model to find a better model. From the exhaustive search, we chose the model with the best adjusted r.squared.
+
+```{r message=FALSE, warning=FALSE}
+library(leaps)
+
+# Exhaustive search with predictors in additive_2 model
+listings_trn_data_v4 = subset(listings_trn_data, select = -c(property_type, host_neighbourhood, neighbourhood_cleansed)) 
+exhaustive_search = summary(regsubsets(price ~ ., data = listings_trn_data_v4, nvmax = 19))
+
+# Which predictors are in the model with best adj.r.squared from exhaustive search
+best_r2_ind = which.max(exhaustive_search$adjr2)
+exhaustive_search$which[best_r2_ind,]
+
+# Fitting and evaluating the model
+exhaustive_model = lm(price ~ host_is_superhost + host_listings_count + accommodates + bathrooms_cleansed + bedrooms + beds + availability_365 + number_of_reviews + review_scores_rating + review_scores_cleanliness + reviews_per_month + neighbourhood_group, data = listings_trn_data)
+
+evaluate(exhaustive_model)
+```
+
+The model from exhaustive search has similar `Test RMSE` and adjusted $R ^ 2$ as the `additive_2` model, but with fewer predictors. This model also returns a warning `linear dependencies found`, which implies that there are collinearity issues. We then attempted a forward AIC search on the predictors in this model and included interaction terms, but the resulting model was significantly more complex and did not have a better Test RMSE. So we did not continue with this model ([details are in Appendix](#app4)).
+
+### Refitting Models Without Influential Points
+
+From exploratory analysis of the data, we saw that there were some listings with extreme prices, so we also tried refitting the `transformed_model` model after removing the influential points, using `4/n` as the heuristic.
+
+```{r}
+# Number of influential points with model
+transformed_model_cooks = cooks.distance(transformed_model)
+sum(transformed_model_cooks > 4 / length(transformed_model_cooks))
+
+# Refit model without influential points
+transformed_without_influential = lm(price ~ host_is_superhost + accommodates + bathrooms_cleansed + I(1 / bedrooms) + I(beds ^ 4) + availability_365 + I(review_scores_rating ^ 6) + I(review_scores_cleanliness ^ 6) + reviews_per_month + neighbourhood_group, data = listings_trn_data, subset = transformed_model_cooks <= 4 / length(transformed_model_cooks))
+
+# Evaluate the model
+evaluate(transformed_without_influential)
+
+```
+
+The resulting model has slightly higher adjusted $R ^ 2$, as is expected since we removed points with high residuals and high leverages, but it has slightly larger test RMSE, which indicates slightly worse predictive ability.     
+            
+We also tried to get a better model by refitting the model from exhaustive search after removing influential points, using `4/n` as the heuristic.
+
+```{r}
+# Number of influential points in the model
+exhautive_cooks = cooks.distance(exhaustive_model)
+sum(exhautive_cooks > 4 / length(exhautive_cooks))
+
+# Refit model without influential points
+exhautive_without_influential = lm(price ~ host_is_superhost + host_listings_count + accommodates + bathrooms_cleansed + bedrooms + beds + availability_365 + number_of_reviews + review_scores_rating + review_scores_cleanliness + reviews_per_month + neighbourhood_group, data = listings_trn_data, subset = exhautive_cooks <= 4 / length(exhautive_cooks))
+
+# Evaluate the model
+evaluate(exhautive_without_influential)
+
+```
+
+The model has higher adjusted $R ^ 2$, but about the same test RMSE, which indicates that the predictive ability did not change much from the original fit.
+
+# Results 
+
+The following are the results obtained from the different methods applied to the training dataset, the dataset included the influential points for the models below:      
+      
+```{r, warning = FALSE, echo = FALSE}
+models_metrics = data.frame(Models = c("full_additive", "additive2", "back_bic_additive2", "interaction_model", "transformed_model", "exhaustive_model"), Test_RMSE = c(evaluate(full_additive)[[1]], evaluate(additive2)[[1]], evaluate(back_bic_additive2)[[1]], evaluate(interaction_model)[[1]], evaluate(transformed_model)[[1]], evaluate(exhaustive_model)[[1]]), Adj_r.squared = c(evaluate(full_additive)[[2]], evaluate(additive2)[[2]], evaluate(back_bic_additive2)[[2]], evaluate(interaction_model)[[2]], evaluate(transformed_model)[[2]], evaluate(exhaustive_model)[[2]]), Number_of_predictors = c(evaluate(full_additive)[[3]], evaluate(additive2)[[3]], evaluate(back_bic_additive2)[[3]], evaluate(interaction_model)[[3]], evaluate(transformed_model)[[3]], evaluate(exhaustive_model)[[3]]) )
+
+
+knitr::kable(models_metrics, caption =  "Metrics From Models With Influential Points") %>% kable_material(c("striped", "hover"))
+```
+            
+        
+The following are the results obtained from the different methods applied to the training dataset, the dataset did not include the influential points for the models below:     
+      
+```{r, warning = FALSE, echo = FALSE}
+models_metrics_subsets= data.frame(Models = c("transformed_without_influential", "exhautive_without_influential"), Test_RMSE = c(evaluate(transformed_without_influential)[[1]], evaluate(exhautive_without_influential)[[1]]), Adj_r.squared = c(evaluate(transformed_without_influential)[[2]], evaluate(exhautive_without_influential)[[2]]), Number_of_predictors = c( evaluate(transformed_without_influential)[[3]], evaluate(exhautive_without_influential)[[3]]))
+
+
+knitr::kable(models_metrics_subsets, caption = "Metrics From Models Without Influential Points") %>% kable_material(c("striped", "hover"))
+```
+
+# Discussion
+
+Our models are not very helpful in predicting a listing price given the available predictors because:
+
+- The best test RMSE we could achieve is `109.74`, which is $`r round((109.75/135.62)*100)`$% of the test RMSE of a model with no predictor ([details are in Appendix](#app1))
+- They can explain only around $50$% of the variability in `price`.
+
+If we had been able to incorporate some of the variables that we dismissed earlier, such as `amenities` and `description`, because of the parsing issue, we may have been able to get a better `Test RMSE` as they seem to play an important role in deciding the price of the listings.
+
+Another major reason that our models do not have great predictive ability is that even though the range of `price` in the dataset is from ``r range(listings$price)[1]`` to ``r range(listings$price)[2]``, 90% of the listings are under $275, as can be seen from the price quantile table below:
+
+```{r echo=F}
+knitr::kable(as.data.frame(t(quantile(listings$price, probs = seq(0, 1, 0.1))))) %>% kable_material(c("striped", "hover"))
+```
+
+We tried to remove influential points to see if that could help with this outlier issue, but the models refit without influential points had similar test RMSE metrics.
+
+In a hypothetical use-case in which users can explicitly choose whether the listing they want to predict the price for is _typical_ or _luxury_, we can build two different models, one for each such option. It would make sense in this use-case to split the observations into two sets based on price ranges to train the two models separately. For instance, for a _typical_ listing model, if we exclude the 10% observations whose price are greater than \$275, a simple additive model can get test RMSE of $38.28 ([details are in Appendix](#app2)), which is a much better result than what we currently have.
+
+In conclusion, although the models we discovered were not very useful for predicting the prices of Vancouver AirBnB listings, we may have been able to create a better model if we had been able to parse and convert more of the variables in the dataset into a usable form, or if we were able to split the data into 2 datasets based on price and luxuriousness of the listing, we may have been able to create 2 separate, useful models for predicting prices.
+
+# Appendix
+
+## Evaluate a model with no predictor {#app1}
+
+```{r}
+no_predictor_model = lm(price ~ 1, data = listings_trn_data)
+evaluate(no_predictor_model)
+```
+
+## Excluding observations whose price are greater than \$275 {#app2}
+
+```{r}
+set.seed(420)
+# consider dataset with observations with prices < $275
+listings_no_luxury = listings[listings$price < 275, ]
+
+# split the dataset into train dataset and test dataset
+listings_no_luxury_trn_idx  = sample(nrow(listings_no_luxury), size = trunc(0.80 * nrow(listings_no_luxury)))
+listings_no_luxury_trn_data = listings_no_luxury[listings_no_luxury_trn_idx, ]
+listings_no_luxury_tst_data = listings_no_luxury[-listings_no_luxury_trn_idx, ]
+
+# simple additive model without 3 factor variables as described in the methods sections
+simple_additive = lm(price ~ . - host_neighbourhood - neighbourhood_cleansed - property_type, data = listings_no_luxury_trn_data)
+
+# Evaluate the model
+evaluate(simple_additive, listings_no_luxury_tst_data)
+```
+
+## Box Cox Transformation on Additive model {#app3}
+
+```{r}
+# Apply Box-Cox Transformation on additive2 model for lambda
+library(faraway)
+library(MASS)
+boxcox(additive2, plotit = TRUE)
+
+# Try log transformation of the response for additive2 model
+log_additive2 = lm (log(price) ~ . - property_type - host_neighbourhood - neighbourhood_cleansed, data = listings_trn_data)
+
+# Evaluate the model after log transformation of the response
+evaluate(log_additive2)
+```
+
+## Forward AIC Search After Exhaustive Approach {#app4}
+
+```{r}
+exhaustive_forwAIC = step(exhaustive_model, scope = price ~ (host_is_superhost + host_listings_count + accommodates + bathrooms_cleansed + bedrooms + beds + availability_365 + number_of_reviews + review_scores_rating + review_scores_cleanliness + reviews_per_month + neighbourhood_group) ^ 2, direction = ("forward"), trace = 0)
+
+evaluate(exhaustive_forwAIC)
+```
+
+## Anova Test for the significance of `host_neighbourhood` predictor {#app5}
+
+```{r}
+#Fitting full_additive model without `host_neighbourhood`
+full_additive_no_hn = lm(price ~ . - host_neighbourhood, data = listings_trn_data)
+
+#Comparing full additive model to full additive without `host_neighbourhood`
+anova(full_additive_no_hn, full_additive)
+
+#Anova p-value
+anova(full_additive_no_hn, full_additive)$'Pr(>F)'[2]
+```
+
+The null hypothesis for this test is $H_0: \beta_i = 0$. Performing an anova F-test for the significance of the `host_neighbourhood` predictor yields a p-value of 0.0541.  With an $\alpha = 0.05$, we fail to reject the null hypothesis and conclude that `host_neighbourhood` is not significant.
+
+##  Group members
+
+```{r echo=FALSE}
+team_members = data.frame(Name = c("Hugh Huang", "Manupriya Arora", "Son-Tung Nguyen"),
+                          Net_Id = c("hughh3", "manupri2", "sontung2"),
+                          Email = c("hughh3@illinois.edu", "manupri2@illinois.edu",
+                                    "sontung2@illinois.edu"))
+knitr::kable(team_members) %>% kable_material(c("striped", "hover"))
+```

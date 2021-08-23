@@ -1,0 +1,253 @@
+---
+title: "Data Analysis Project Proposal"
+author: "Course: STAT 420 (Summer 2021), Authors: Hugh Huang, Manupriya Arora, Son-Tung Nguyen"
+date: ''
+output:
+  html_document: 
+    theme: readable
+    toc: yes
+urlcolor: cyan
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+# Analysis of AirBnB Listing Prices in Vancouver, BC, CA
+
+## Data loading & cleaning
+
+```{r, message = FALSE}
+# Load dataset
+library(readr)
+listings = read_csv("vancouver_listings_cleansed.csv")
+
+# Convert some columns to factors
+listings$host_neighbourhood = as.factor(listings$host_neighbourhood)
+listings$neighbourhood_cleansed = as.factor(listings$neighbourhood_cleansed)
+listings$property_type = as.factor(listings$property_type)
+listings$room_type = as.factor(listings$room_type)
+
+# Remove id and string columns
+listings$id = NULL
+listings$description = NULL
+listings$host_acceptance_rate = NULL
+listings$host_verifications = NULL
+listings$amenities = NULL
+listings$host_id = NULL
+listings = na.omit(listings)
+
+listings = subset(listings, listings$host_neighbourhood != "Kihei/Wailea")
+listings = subset(listings, listings$host_neighbourhood != "Ewa")
+listings = subset(listings, listings$property_type != "Camper/RV")
+listings = subset(listings, listings$property_type != "Entire floor")
+listings = subset(listings, listings$property_type != "Private room in boat")
+listings = subset(listings, listings$property_type != "Shared room in hostel")
+listings = subset(listings, listings$property_type != "Private room in bed and breakfast")
+listings = subset(listings, listings$property_type != "Room in bed and breakfast")
+listings = subset(listings, listings$host_neighbourhood != "Metrotown")
+listings = subset(listings, listings$room_type != "Hotel Room")
+
+#listings$price[which(listings$price > 1000)]
+#listings = subset(listings, listings$price < 1200) #removing outliers
+```
+
+## Test:Train Split
+
+```{r}
+set.seed(420)
+listings_trn_idx  = sample(nrow(listings), size = trunc(0.80 * nrow(listings)))
+listings_trn_data = listings[listings_trn_idx, ]
+listings_tst_data = listings[-listings_trn_idx, ]
+```
+
+## Model building
+
+```{r}
+full_add_model = lm(price ~ ., data = listings_trn_data)
+#m_aic = step(full_add_model, direction = "both", trace = 0)
+library(leaps)
+head(listings_trn_data)
+
+listings_trn_data_v1 = subset(listings_trn_data, select = -c(host_neighbourhood, host_listings_count, reviews_per_month, has_availability, availability_365, review_scores_cleanliness, property_type))
+
+listings_trn_data_v2 = subset(listings_trn_data, select = -c(host_neighbourhood, host_listings_count, reviews_per_month, has_availability, availability_365, review_scores_cleanliness, neighbourhood_cleansed))
+
+listings_trn_data_v3 = subset(listings_trn_data, select = -c(property_type, host_listings_count, reviews_per_month, has_availability, availability_365, review_scores_cleanliness, neighbourhood_cleansed))
+
+sum(listings$room_type == "Hotel room")
+listings$room_type = droplevels(listings$room_type, exclude = "Hotel room")
+levels(listings$room_type)
+listings_trn_data$room_type = droplevels(listings_trn_data$room_type, exclude = "Hotel room")
+levels(listings_trn_data$room_type)
+
+ex_v1 = summary(regsubsets(price ~ ., data = listings_trn_data_v1, really.big = TRUE))
+ex_v1$which[9,]
+
+ex_v2 = summary(regsubsets(price ~ ., data = listings_trn_data_v2, really.big = TRUE))
+ex_v2$which[9,]
+
+ex_v3 = summary(regsubsets(price ~ ., data = listings_trn_data_v3, really.big = TRUE))
+ex_v3
+
+ex_nc = lm(price ~ neighbourhood_cleansed + accommodates +bathrooms_cleansed + bedrooms + review_scores_rating, data = listings_trn_data) #no property_type or host_neighbourhood
+
+ex_pt = lm(price ~ property_type + accommodates +bathrooms_cleansed + bedrooms + review_scores_rating, data = listings_trn_data) #no neighbourhood_cleansed or host_neighbourhood
+
+ex_hn = lm(price ~ host_neighbourhood + accommodates +bathrooms_cleansed + bedrooms + review_scores_rating, data = listings_trn_data) #no property_type or neighbourhood_cleansed
+```
+
+```{r}
+ex_try = lm(price ~ neighbourhood_cleansed + property_type + bathrooms_cleansed + bedrooms + neighbourhood_cleansed:bedrooms + accommodates + review_scores_rating, data = listings_trn_data)
+
+ex_try_v2 = lm(price ~ neighbourhood_cleansed + property_type + bathrooms_cleansed + bedrooms + neighbourhood_cleansed:bedrooms + accommodates + review_scores_rating + bathrooms_cleansed:bedrooms + bathrooms_cleansed:accommodates + bathrooms_cleansed:review_scores_rating + bedrooms:accommodates + bedrooms:review_scores_rating + accommodates:review_scores_rating, data = listings_trn_data)
+
+ex_try_v3 = lm(price ~ neighbourhood_cleansed + property_type + bathrooms_cleansed + bedrooms + neighbourhood_cleansed:bedrooms + accommodates + review_scores_rating + bathrooms_cleansed:bedrooms + bathrooms_cleansed:accommodates + bathrooms_cleansed:review_scores_rating + bedrooms:accommodates + bedrooms:review_scores_rating + accommodates:review_scores_rating + review_scores_cleanliness + has_availability + room_type, data = listings_trn_data)
+
+#full_interaction_model = lm(price ~ . + ^ 2, data = listings_trn_data)
+
+ex_v4 = summary(regsubsets(price ~ (bathrooms_cleansed + bedrooms + accommodates + review_scores_rating) ^ 2, data = listings_trn_data, really.big = TRUE))
+ex_v4$which[8,]
+```
+
+```{r}
+plot(price ~ ., data = listings_trn_data)
+boxplot(listings$price)
+```
+
+
+##Diagnostics
+
+```{r}
+library(lmtest)
+diagnostics = function(model, pcol = 'grey', lcol = 'dodgerblue', alpha = 0.05, plotit = TRUE, testit = TRUE) {
+  if (plotit) {
+    par(mfrow=c(1, 2))
+    
+    plot(fitted(model), resid(model), col = pcol, xlab = "Fitted", ylab = "Residuals", main = "Residuals vs fitted")
+    abline(h = 0, col = lcol, lwd = 2)
+    
+    qqnorm(resid(model), main = "Normal Q-Q Plot", col = pcol)
+    qqline(resid(model), col = lcol, lwd = 2)
+
+  }
+  
+  if (testit) {
+    shapiro_wilk = shapiro.test(resid(model))
+    decision = if (shapiro_wilk$p.value < alpha) "Reject" else "Fail to Reject"
+    list("p_val" = shapiro_wilk$p.value, "decision" = decision)
+  }
+}
+
+get_loocv_rmse = function(model) {
+  sqrt(mean((resid(model) / (1 - hatvalues(model))) ^ 2))
+}
+
+get_test_average_percent_error = function(model) {
+  test_predictions = predict(model, newdata = listings_tst_data)
+  sum(abs(test_predictions - listings_tst_data$price) / test_predictions) * 100 / length(listings_tst_data$price)
+}
+
+get_test_rmse = function(model){
+  sqrt(mean((listings_tst_data$price - predict(model, listings_tst_data))^2))
+}
+```
+
+```{r}
+get_test_average_percent_error(ex_nc)
+get_loocv_rmse(ex_nc)
+
+get_test_average_percent_error(ex_pt)
+get_loocv_rmse(ex_pt)
+
+get_test_average_percent_error(ex_hn)
+get_loocv_rmse(ex_hn)
+
+get_test_average_percent_error(full_add_model)
+get_loocv_rmse(full_add_model)
+
+get_test_average_percent_error(ex_try_v2)
+get_loocv_rmse(ex_try_v2)
+
+get_test_average_percent_error(ex_try_v3)
+get_loocv_rmse(ex_try_v3)
+
+diagnostics(ex_try_v2)
+```
+
+#experimenting
+
+ex_try_v3 = lm(price ~ neighbourhood_cleansed + property_type + bathrooms_cleansed + bedrooms + neighbourhood_cleansed:bedrooms + accommodates + review_scores_rating + bathrooms_cleansed:bedrooms + bathrooms_cleansed:accommodates + bathrooms_cleansed:review_scores_rating + bedrooms:accommodates + bedrooms:review_scores_rating + accommodates:review_scores_rating + review_scores_cleanliness + has_availability + room_type, data = listings_trn_data)
+
+```{r}
+summary(ex_try_v3)
+
+exp = lm(price ~ accommodates + bathrooms_cleansed + bedrooms + log(review_scores_rating), data = listings_trn_data)
+
+summary(exp)
+
+get_test_average_percent_error(exp)
+get_loocv_rmse(exp)
+get_test_rmse(exp)
+
+test_predictions = predict(exp, newdata = listings_tst_data)
+which(abs(test_predictions - listings_tst_data$price) == max(abs(test_predictions - listings_tst_data$price)))
+
+abs(test_predictions - listings_tst_data$price) / test_predictions
+
+diagnostics(exp)
+```
+
+##experiment with exp but removing outliers
+```{r}
+sum(cooks.distance(exp) > 4 / length(cooks.distance(exp)))
+
+cd_exp = cooks.distance(exp)
+exp2 = lm(price ~ accommodates + bathrooms_cleansed + bedrooms + log(review_scores_rating), data = listings_trn_data, subset = cd_exp <= 4 / length(cooks.distance(exp)))
+
+get_test_average_percent_error(exp2)
+get_loocv_rmse(exp2)
+get_test_rmse(exp2)
+
+test_predictions2 = predict(exp2, newdata = listings_tst_data)
+max(abs(test_predictions2 - listings_tst_data$price))
+
+which(abs(test_predictions2 - listings_tst_data$price) == max(abs(test_predictions2 - listings_tst_data$price)))
+
+listings_tst_data[134,]
+test_predictions2[134]
+```
+
+
+##exp but adding terms
+```{r}
+exp_nc = lm(price ~ accommodates + bathrooms_cleansed + bedrooms + log(review_scores_rating) + neighbourhood_cleansed, data = listings_trn_data) # bad
+
+summary(exp_nc)
+get_test_average_percent_error(exp_nc)
+get_loocv_rmse(exp_nc)
+get_test_rmse(exp_nc)
+
+#+ accommodates:bathrooms_cleansed + bathrooms_cleansed:bedrooms
+
+exp_int = lm(price ~ accommodates + bathrooms_cleansed + bedrooms + log(review_scores_rating), data = listings_trn_data)
+
+summary(exp_int)
+get_test_average_percent_error(exp_int)
+get_loocv_rmse(exp_int)
+get_test_rmse(exp_int)
+```
+
+
+##experimenting with outliers, modify cooks threshold
+```{r}
+sum(cooks.distance(exp) > 10 / length(cooks.distance(exp)))
+
+exp3 = lm(price ~ accommodates + bathrooms_cleansed + bedrooms + log(review_scores_rating), data = listings_trn_data, subset = cd_exp <= 10 / length(cooks.distance(exp)))
+
+get_test_average_percent_error(exp3)
+get_loocv_rmse(exp3)
+get_test_rmse(exp3)
+```
+

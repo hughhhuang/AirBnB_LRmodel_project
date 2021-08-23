@@ -1,0 +1,164 @@
+---
+title: "Analysis of AirBnB Listing Prices in Vancouver, BC, CA"
+date: ''
+output:
+  html_document: 
+    theme: readable
+    toc: yes
+urlcolor: cyan
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Analysis of AirBnB Listing Prices in Vancouver, BC, CA
+
+## Introduction 
+       
+The dataset being analyzed in this report is that of Vancouver AirBnB listings, which was compiled on April 12, 2021. The dataset comes from `Inside AirBnB`, which is an independent, non-commercial resource that contains publicly available information of many cities' AirBnB listings; the Vancouver data that we will be analyzed can be found here: http://data.insideairbnb.com/canada/bc/vancouver/2021-04-12/data/listings.csv.gz. 
+    
+The aim of this analysis is to create a linear model to predict the prices of listings in Vancouver, CA. This dataset contains 4300 rows and 74 variables, but it will be cleaned to keep only those variables that deem to be important in predicting the prices of the listings. The variables that will remain in the dataset after data cleaning are following:
+
+```{r echo=FALSE}
+keep_variables = data.frame(Variables = c("host_is_superhost", "neighbourhood_cleansed", "accommodates", "beds", "availability_365", "review_scores_cleanliness", "host_neighbourhood", "property_type", "bathrooms_cleansed", "price", "number_of_reviews", "instant_bookable", "host_listings_count", "room_type", "bedrooms", "has_availability", "review_scores_rating", "reviews_per_month"), Class = c("logical", "factor", "numeric", "numeric", "numeric", "numeric", "factor", "factor", "numeric", "numeric", "numeric", "logical", "numeric", "factor", "numeric", "logical", "numeric", "numeric"))
+
+knitr::kable(keep_variables, caption = "Important Variables For Predicting Price")
+```
+      
+This analysis would be useful for helping consumers who are planning a trip to Vancouver, by allowing them to estimate how much they would have to pay for AirBnB housing, based on the characteristics of the listing that they are looking for. It would also help Vancouver AirBnB hosts to price their listings competitively by allowing them to estimate how much their listing should cost based on the variables that we will analyze in our model. We are focusing on Vancouver specifically because one of our team members, Son-Tung, is planning to move to Vancouver soon and is interested in the housing prices there. 
+
+## Methods
+### Data Loading & Cleaning
+
+```{r, message = FALSE}
+# Load dataset
+library(readr)
+listings = read_csv("vancouver_listings_cleansed.csv")
+
+# Convert some columns to factors
+listings$host_neighbourhood = as.factor(listings$host_neighbourhood)
+listings$neighbourhood_cleansed = as.factor(listings$neighbourhood_cleansed)
+listings$property_type = as.factor(listings$property_type)
+listings$room_type = as.factor(listings$room_type)
+
+# Remove id and string columns
+listings$id = NULL
+listings$description = NULL
+listings$host_acceptance_rate = NULL
+listings$host_verifications = NULL
+listings$amenities = NULL
+listings$host_id = NULL
+listings = na.omit(listings)
+
+# Removing the following from the dataset because these classes have single records that cause
+# problems when predicting the values for test data, if the test dataset contain these records, as 
+# the models can get either be trained for these records or tested on these records.
+listings = subset(listings, listings$host_neighbourhood != "Kihei/Wailea")
+listings = subset(listings, listings$host_neighbourhood != "Ewa")
+listings = subset(listings, listings$host_neighbourhood != "Metrotown")
+listings = subset(listings, listings$host_neighbourhood != "Waikiki")
+listings = subset(listings, listings$property_type != "Camper/RV")
+listings = subset(listings, listings$property_type != "Entire floor")
+listings = subset(listings, listings$property_type != "Private room in boat")
+listings = subset(listings, listings$property_type != "Shared room in hostel")
+listings = subset(listings, listings$property_type != "Private room in bed and breakfast")
+listings = subset(listings, listings$property_type != "Room in bed and breakfast")
+
+```
+
+### Test:Train Split
+```{r}
+set.seed(420)
+listings_trn_idx  = sample(nrow(listings), size = trunc(0.80 * nrow(listings)))
+listings_trn_data = listings[listings_trn_idx, ]
+listings_tst_data = listings[-listings_trn_idx, ]
+```
+
+### Useful Methods
+
+```{r message=FALSE, warning=FALSE}
+library(lmtest)
+
+# function for checking model assumptions
+diagnostics = function(model, pcol = 'grey', lcol = 'dodgerblue', alpha = 0.05, plotit = TRUE, testit = TRUE) {
+  if (plotit) {
+    par(mfrow=c(1, 2))
+    
+    plot(fitted(model), resid(model), col = pcol, xlab = "Fitted", ylab = "Residuals", 
+         main = "Residuals vs fitted")
+    abline(h = 0, col = lcol, lwd = 2)
+    
+    qqnorm(resid(model), main = "Normal Q-Q Plot", col = pcol)
+    qqline(resid(model), col = lcol, lwd = 2)
+
+  }
+  
+  if (testit) {
+    shapiro_wilk = shapiro.test(resid(model))
+    decision = if (shapiro_wilk$p.value < alpha) "Reject" else "Fail to Reject"
+    list("p_val" = shapiro_wilk$p.value, "decision" = decision)
+  }
+}
+
+# calculate LOOCV RMSE
+get_loocv_rmse = function(model) {
+  sqrt(mean((resid(model) / (1 - hatvalues(model))) ^ 2))
+}
+
+# calculate average percent error
+get_test_average_percent_error = function(model) {
+  test_predictions = predict(model, newdata = listings_tst_data)
+  (sum(abs(test_predictions - listings_tst_data$price) / test_predictions) * 100) /  length(listings_tst_data$price)
+}
+```
+
+
+### Model Building
+
+```{r}
+
+# Stepwise search
+full_add_model = lm(price ~ ., data = listings_trn_data)
+m_aic = step(full_add_model, direction = "both", trace = 0)
+
+get_loocv_rmse(m_aic)
+
+# Backward AIC model
+add_back_aic_model = step(full_add_model, direction = "backward", trace = 0)
+get_loocv_rmse(add_back_aic_model)
+
+# Backward BIC Model
+n = length(resid(full_add_model))
+add_back_bic_model = step(full_add_model, direction = "backward", k = log(n), trace = 0)
+get_loocv_rmse(add_back_bic_model)
+
+# Forward AIC model 1
+price_mod_start = lm(price ~ 1, data = listings_trn_data)
+price_mod_forw_aic1 = step(
+  price_mod_start, 
+  scope = price ~ ., 
+  direction = "forward", trace = 0)
+get_loocv_rmse(price_mod_forw_aic1)
+
+# Forward AIC model 2
+price_mod_forw_aic2 = step(
+  price_mod_start, 
+  scope = price ~ accommodates + beds + bedrooms + number_of_reviews + neighbourhood_cleansed + instant_bookable, 
+  direction = "forward", trace = 0)
+get_loocv_rmse(price_mod_forw_aic2)
+
+# Forward BIC model
+price_mod_forw_bic = step(
+  price_mod_start, 
+  scope = price ~ ., 
+  direction = "forward", k = log(n), trace = 0)
+get_loocv_rmse(price_mod_forw_bic)
+
+# Interaction Model
+int_model = lm(price ~ neighbourhood_cleansed + property_type + bathrooms_cleansed + bedrooms + neighbourhood_cleansed:bedrooms + accommodates + review_scores_rating, data = listings_trn_data)
+get_loocv_rmse(int_model)
+
+get_test_average_percent_error(add_back_bic_model)
+```
+
